@@ -289,6 +289,12 @@ static VALUE llama_batch_get_n_tokens(VALUE self) {
   return INT2NUM(data->n_tokens);
 }
 
+static VALUE llama_batch_set_n_tokens(VALUE self, VALUE n) {
+  llama_batch* data = get_llama_batch(self);
+  data->n_tokens = NUM2INT(n);
+  return n;
+}
+
 static VALUE llama_batch_get_token(VALUE self) {
   llama_batch* data = get_llama_batch(self);
   int32_t n_tokens = data->n_tokens;
@@ -2446,6 +2452,38 @@ static VALUE rb_llama_batch_init(VALUE self, VALUE n_tokens, VALUE embd, VALUE n
 }
 
 /**
+ * @overload llama_batch_add(batch, token, pos, seq_ids, logits)
+ *  @param [LlamaBatch] batch
+ *  @param [Integer] token
+ *  @param [Integer] pos
+ *  @param [Array<Integer>] seq_ids
+ *  @param [Boolean] logits
+ *  @return [NilClass]
+ */
+static VALUE rb_llama_batch_add(VALUE self, VALUE batch, VALUE token, VALUE pos, VALUE seq_ids, VALUE logits) {
+  if (!rb_obj_is_kind_of(batch, rb_cLlamaBatch)) {
+    rb_raise(rb_eArgError, "batch must be a LlamaBatch");
+    return Qnil;
+  }
+  if (!RB_TYPE_P(seq_ids, T_ARRAY)) {
+    rb_raise(rb_eArgError, "seq_ids must be an Array");
+    return Qnil;
+  }
+  llama_batch* b = get_llama_batch(batch);
+  const int32_t i = b->n_tokens;
+  b->token[i] = NUM2INT(token);
+  b->pos[i] = NUM2INT(pos);
+  b->n_seq_id[i] = (int32_t)RARRAY_LEN(seq_ids);
+  for (int32_t j = 0; j < b->n_seq_id[i]; j++) {
+    b->seq_id[i][j] = NUM2INT(rb_ary_entry(seq_ids, j));
+  }
+  b->logits[i] = RTEST(logits) ? 1 : 0;
+  b->n_tokens++;
+  RB_GC_GUARD(batch);
+  return Qnil;
+}
+
+/**
  * @overload llama_batch_free(batch)
  *  @param [LlamaBatch] batch
  *  @return [NilClass]
@@ -2634,6 +2672,83 @@ static VALUE rb_llama_synchronize(VALUE self, VALUE ctx) {
   llama_synchronize(context_wrapper->context);
   RB_GC_GUARD(ctx);
   return Qnil;
+}
+
+/**
+ * @overload llama_get_embeddings(context)
+ *  @param [LlamaContext] context
+ *  @return [Array<Float>]
+ */
+static VALUE rb_llama_get_embeddings(VALUE self, VALUE ctx) {
+  if (!rb_obj_is_kind_of(ctx, rb_cLlamaContext)) {
+    rb_raise(rb_eArgError, "ctx must be a LlamaContext");
+    return Qnil;
+  }
+  llama_context_wrapper* context_wrapper = get_llama_context_wrapper(ctx);
+  const struct llama_model* model = llama_get_model(context_wrapper->context);
+  const int32_t n_embd = llama_model_n_embd(model);
+  const float* embd = llama_get_embeddings(context_wrapper->context);
+  if (embd == NULL) {
+    return Qnil;
+  }
+  VALUE result = rb_ary_new2(n_embd);
+  for (int32_t i = 0; i < n_embd; i++) {
+    rb_ary_store(result, i, DBL2NUM((double)embd[i]));
+  }
+  RB_GC_GUARD(ctx);
+  return result;
+}
+
+/**
+ * @overload llama_get_embeddings_ith(context, i)
+ *  @param [LlamaContext] context
+ *  @param [Integer] i
+ *  @return [Array<Float>]
+ */
+static VALUE rb_llama_get_embeddings_ith(VALUE self, VALUE ctx, VALUE idx) {
+  if (!rb_obj_is_kind_of(ctx, rb_cLlamaContext)) {
+    rb_raise(rb_eArgError, "ctx must be a LlamaContext");
+    return Qnil;
+  }
+  llama_context_wrapper* context_wrapper = get_llama_context_wrapper(ctx);
+  const struct llama_model* model = llama_get_model(context_wrapper->context);
+  const int32_t n_embd = llama_model_n_embd(model);
+  const float* embd = llama_get_embeddings_ith(context_wrapper->context, NUM2INT(idx));
+  if (embd == NULL) {
+    return Qnil;
+  }
+  VALUE result = rb_ary_new2(n_embd);
+  for (int32_t i = 0; i < n_embd; i++) {
+    rb_ary_store(result, i, DBL2NUM((double)embd[i]));
+  }
+  RB_GC_GUARD(ctx);
+  return result;
+}
+
+/**
+ * @overload llama_get_embeddings_seq(context, seq_id)
+ *  @param [LlamaContext] context
+ *  @param [Integer] seq_id
+ *  @return [Array<Float>]
+ */
+static VALUE rb_llama_get_embeddings_seq(VALUE self, VALUE ctx, VALUE seq_id) {
+  if (!rb_obj_is_kind_of(ctx, rb_cLlamaContext)) {
+    rb_raise(rb_eArgError, "ctx must be a LlamaContext");
+    return Qnil;
+  }
+  llama_context_wrapper* context_wrapper = get_llama_context_wrapper(ctx);
+  const struct llama_model* model = llama_get_model(context_wrapper->context);
+  const int32_t n_embd = llama_model_n_embd(model);
+  const float* embd = llama_get_embeddings_seq(context_wrapper->context, NUM2INT(seq_id));
+  if (embd == NULL) {
+    return Qnil;
+  }
+  VALUE result = rb_ary_new2(n_embd);
+  for (int32_t i = 0; i < n_embd; i++) {
+    rb_ary_store(result, i, DBL2NUM((double)embd[i]));
+  }
+  RB_GC_GUARD(ctx);
+  return result;
 }
 
 /**
@@ -4287,6 +4402,7 @@ void Init_llama_cpp(void) {
    * @return [Integer]
    */
   rb_define_method(rb_cLlamaBatch, "n_tokens", RUBY_METHOD_FUNC(llama_batch_get_n_tokens), 0);
+  rb_define_method(rb_cLlamaBatch, "n_tokens=", RUBY_METHOD_FUNC(llama_batch_set_n_tokens), 1);
   /**
    * Document-method: token
    * @return [Array<Integer>]
@@ -5247,6 +5363,9 @@ void Init_llama_cpp(void) {
   /* llama_batch_init */
   rb_define_module_function(rb_mLlamaCpp, "llama_batch_init", rb_llama_batch_init, 3);
 
+  /* llama_batch_add */
+  rb_define_module_function(rb_mLlamaCpp, "llama_batch_add", rb_llama_batch_add, 5);
+
   /* llama_batch_free */
   rb_define_module_function(rb_mLlamaCpp, "llama_batch_free", rb_llama_batch_free, 1);
 
@@ -5281,9 +5400,14 @@ void Init_llama_cpp(void) {
 
   /* TODO: llama_get_logits */
   /* TODO: llama_get_logits_ith */
-  /* TODO: llama_get_embeddings */
-  /* TODO: llama_get_embeddings_ith */
-  /* TODO: llama_get_embeddings_seq */
+  /* llama_get_embeddings */
+  rb_define_module_function(rb_mLlamaCpp, "llama_get_embeddings", rb_llama_get_embeddings, 1);
+
+  /* llama_get_embeddings_ith */
+  rb_define_module_function(rb_mLlamaCpp, "llama_get_embeddings_ith", rb_llama_get_embeddings_ith, 2);
+
+  /* llama_get_embeddings_seq */
+  rb_define_module_function(rb_mLlamaCpp, "llama_get_embeddings_seq", rb_llama_get_embeddings_seq, 2);
 
   /* TODO: llama_get_sampled_token_ith */
   /* TODO: llama_get_sampled_probs_ith */
