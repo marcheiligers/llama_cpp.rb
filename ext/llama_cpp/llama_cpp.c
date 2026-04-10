@@ -1925,18 +1925,95 @@ static VALUE rb_llama_model_size(VALUE self, VALUE model) {
 }
 
 /* llama_model_chat_template */
-/*
-static VALUE rb_llama_model_chat_template(VALUE self, VALUE model) {
+/**
+ * @overload llama_model_chat_template(model, name = nil)
+ *  @param [LlamaModel] model
+ *  @param [String, nil] name Template name (nil for default)
+ *  @return [String, nil] The chat template string, or nil if not available
+ */
+static VALUE rb_llama_model_chat_template(int argc, VALUE* argv, VALUE self) {
+  VALUE model, name;
+  rb_scan_args(argc, argv, "11", &model, &name);
   if (!rb_obj_is_kind_of(model, rb_cLlamaModel)) {
     rb_raise(rb_eArgError, "model must be a LlamaModel");
     return Qnil;
   }
   llama_model_wrapper* model_wrapper = get_llama_model_wrapper(model);
-  const char* templ = llama_model_chat_template(model_wrapper->model)
+  const char* name_cstr = NIL_P(name) ? NULL : StringValueCStr(name);
+  const char* templ = llama_model_chat_template(model_wrapper->model, name_cstr);
   RB_GC_GUARD(model);
+  if (templ == NULL) {
+    return Qnil;
+  }
   return rb_utf8_str_new_cstr(templ);
 }
-*/
+
+/* llama_chat_apply_template */
+/**
+ * @overload llama_chat_apply_template(tmpl, messages, add_ass)
+ *  @param [String, nil] tmpl Template string (nil to use built-in default)
+ *  @param [Array<Hash>] messages Array of {role: String, content: String}
+ *  @param [Boolean] add_ass Whether to add assistant prompt at the end
+ *  @return [String] The formatted prompt
+ */
+static VALUE rb_llama_chat_apply_template(VALUE self, VALUE tmpl, VALUE messages, VALUE add_ass) {
+  Check_Type(messages, T_ARRAY);
+
+  const char* tmpl_cstr = NIL_P(tmpl) ? NULL : StringValueCStr(tmpl);
+  long n_msg = RARRAY_LEN(messages);
+  bool add_assistant = RTEST(add_ass);
+
+  struct llama_chat_message* chat = ALLOCA_N(struct llama_chat_message, n_msg);
+  for (long i = 0; i < n_msg; i++) {
+    VALUE msg = rb_ary_entry(messages, i);
+    Check_Type(msg, T_HASH);
+    VALUE role = rb_hash_aref(msg, ID2SYM(rb_intern("role")));
+    VALUE content = rb_hash_aref(msg, ID2SYM(rb_intern("content")));
+    if (NIL_P(role)) role = rb_hash_aref(msg, rb_str_new_cstr("role"));
+    if (NIL_P(content)) content = rb_hash_aref(msg, rb_str_new_cstr("content"));
+    if (NIL_P(role) || NIL_P(content)) {
+      rb_raise(rb_eArgError, "each message must have :role and :content keys");
+      return Qnil;
+    }
+    chat[i].role = StringValueCStr(role);
+    chat[i].content = StringValueCStr(content);
+  }
+
+  /* First call to determine required buffer size */
+  int32_t needed = llama_chat_apply_template(tmpl_cstr, chat, (size_t)n_msg, add_assistant, NULL, 0);
+  if (needed < 0) {
+    rb_raise(rb_eRuntimeError, "failed to apply chat template");
+    return Qnil;
+  }
+
+  char* buf = ALLOCA_N(char, needed + 1);
+  llama_chat_apply_template(tmpl_cstr, chat, (size_t)n_msg, add_assistant, buf, needed + 1);
+  buf[needed] = '\0';
+
+  return rb_utf8_str_new(buf, needed);
+}
+
+/* llama_chat_builtin_templates */
+/**
+ * @overload llama_chat_builtin_templates()
+ *  @return [Array<String>] List of built-in chat template names
+ */
+static VALUE rb_llama_chat_builtin_templates(VALUE self) {
+  /* First call to get count */
+  int32_t count = llama_chat_builtin_templates(NULL, 0);
+  if (count <= 0) {
+    return rb_ary_new();
+  }
+
+  const char** output = ALLOCA_N(const char*, count);
+  llama_chat_builtin_templates(output, (size_t)count);
+
+  VALUE result = rb_ary_new_capa(count);
+  for (int32_t i = 0; i < count; i++) {
+    rb_ary_push(result, rb_utf8_str_new_cstr(output[i]));
+  }
+  return result;
+}
 
 /**
  * @overload llama_model_n_params(model)
@@ -5388,8 +5465,8 @@ void Init_llama_cpp(void) {
   /* llama_model_size */
   rb_define_module_function(rb_mLlamaCpp, "llama_model_size", rb_llama_model_size, 1);
 
-  /* TODO: llama_model_chat_template */
-  /* rb_define_module_function(rb_mLlamaCpp, "llama_model_chat_template", rb_llama_model_chat_template, 1); */
+  /* llama_model_chat_template */
+  rb_define_module_function(rb_mLlamaCpp, "llama_model_chat_template", rb_llama_model_chat_template, -1);
 
   /* llama_model_n_params */
   rb_define_module_function(rb_mLlamaCpp, "llama_model_n_params", rb_llama_model_n_params, 1);
@@ -5624,8 +5701,11 @@ void Init_llama_cpp(void) {
   /* llama_detokenize */
   rb_define_module_function(rb_mLlamaCpp, "llama_detokenize", rb_llama_detokenize, 4);
 
-  /* TODO: llama_chat_apply_template */
-  /* TODO: llama_chat_builtin_templates */
+  /* llama_chat_apply_template */
+  rb_define_module_function(rb_mLlamaCpp, "llama_chat_apply_template", rb_llama_chat_apply_template, 3);
+
+  /* llama_chat_builtin_templates */
+  rb_define_module_function(rb_mLlamaCpp, "llama_chat_builtin_templates", rb_llama_chat_builtin_templates, 0);
 
   /* TODO: llama_sampler_context_t */
   /* TODO: struct llama_sampler_data */
